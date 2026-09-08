@@ -404,12 +404,18 @@ jobs:
         run: |
           DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*vili*.dtbo" 2>/dev/null)
           if [ -z "$DTBO_FILES" ]; then
-            echo "[-] No .dtbo files found."
-            find out/ -name "*.dtbo" | head -50
-            exit 1
+            echo "[-] No *vili*.dtbo found, trying *lahaina*.dtbo..."
+            DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*lahaina*.dtbo" 2>/dev/null)
           fi
-          mkdtimg create out/arch/${{ env.KERNEL_ARCH }}/boot/dtbo.img --page_size=4096 ${DTBO_FILES}
-          echo "[+] DTBO created."
+          if [ -z "$DTBO_FILES" ]; then
+            echo "[-] No DTBO files found, skipping DTBO creation."
+            find out/ -name "*.dtbo" | head -20 || true
+          else
+            echo "[+] DTBO files found:"
+            echo "$DTBO_FILES"
+            mkdtimg create out/arch/${{ env.KERNEL_ARCH }}/boot/dtbo.img --page_size=4096 ${DTBO_FILES}
+            echo "[+] DTBO created."
+          fi
 
       - name: Pack AnyKernel3 zip
         run: |
