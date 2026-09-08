@@ -1,0 +1,451 @@
+name: Build Xiaomi 11T Pro (vili) Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  DEVICE_NAME: "xiaomi_vili"
+  DEVICE_CODENAME: "vili"
+  KERNEL_ARCH: "arm64"
+  DEFCONFIG_NAME: "vili_defconfig"
+
+  CUSTOM_CMDS: "CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-"
+  EXTRA_CMDS: "LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf HOSTCC=clang HOSTCXX=clang++ KCFLAGS='-Wno-strict-prototypes -D__ANDROID_COMMON_KERNEL__' STOP_SHIP_TRACEPRINTK=1 IN_KERNEL_MODULES=1 DO_NOT_STRIP_MODULES=0 STRIP_MODULES=1"
+
+  CLANG_URL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-security-release/clang-r416183b1.tar.gz"
+  GCC_URL: "https://github.com/rsuplaygrnd/toolchains.git"
+  GCC_BRANCH: "androidcc-4.9"
+
+  AK3_SOURCE: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_BRANCH: "master"
+  AK3_COMMIT: "dca9dc370838d919d56c1f59ec78b27a14a72c68"
+
+  ROM_TEXT: "vili_kernel"
+
+  PATCHES_BASE: "https://raw.githubusercontent.com/nevadamurdock/NonGKI_Kernel_Build_2nd/mainline"
+
+  KERNELSU_AUTHOR: "ReSukiSU"
+  KERNELSU_NAME: "ReSukiSU"
+  KERNELSU_ORIGIN_BRANCH: "main"
+  KERNELSU_BRANCH: "main"
+
+  SUSFS_VERSION: "2.3.00"
+
+jobs:
+  build-kernel:
+    name: Build Xiaomi 11T Pro (vili) Kernel
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex bison gperf build-essential zip curl wget \
+            zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev squashfs-tools schedtool dpkg-dev \
+            liblz4-tool make optipng maven libssl-dev bc libc6-dev-i386 libx11-dev lib32z-dev \
+            libgl1-mesa-dev xsltproc unzip device-tree-compiler cpio lz4 libz3-4 zstd \
+            libelf-dev libncurses-dev p7zip p7zip-full python3
+          curl -L -o libtinfo5.deb "https://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb"
+          sudo apt-get install -y ./libtinfo5.deb
+          rm -f libtinfo5.deb
+
+      - name: Install mkdtimg tool
+        run: |
+          mkdir -p mkdtbo
+          cd mkdtbo
+          curl -L -o src.tar.gz "https://android.googlesource.com/platform/system/libufdt/+archive/refs/heads/main/utils/src.tar.gz"
+          tar zxvf src.tar.gz
+          chmod +x mkdtboimg.py
+          sudo ln -sf "$(pwd)/mkdtboimg.py" /usr/bin/mkdtimg
+          sudo ln -sf "$(pwd)/mkdtboimg.py" /usr/bin/mkdtboimg
+
+      - name: Get Clang toolchain
+        run: |
+          curl -L -o clang.tar.gz "${{ env.CLANG_URL }}"
+          mkdir -p clang-custom
+          tar -C clang-custom -zxf clang.tar.gz
+          SUB=$(find clang-custom -maxdepth 1 -type d -name 'clang-r*' | head -n 1)
+          if [ -n "$SUB" ] && [ ! -d clang-custom/bin ]; then
+            mv "$SUB"/* clang-custom/
+            mv "$SUB"/.* clang-custom/ 2>/dev/null || true
+          fi
+          test -x clang-custom/bin/clang && echo "[+] Clang OK" || { echo "[-] clang binary missing"; exit 1; }
+
+      - name: Get aarch64 GCC 4.9 (androidcc-4.9)
+        run: |
+          git clone --depth=1 "${{ env.GCC_URL }}" -b "${{ env.GCC_BRANCH }}" google
+          if [ -x google/bin/aarch64-linux-android-ld ]; then
+            echo "[+] aarch64 GCC 4.9 found"
+          else
+            echo "[-] aarch64 GCC 4.9 not found, abort."
+            exit 1
+          fi
+          echo "GCC_64=CROSS_COMPILE=$GITHUB_WORKSPACE/google/bin/aarch64-linux-android-" >> $GITHUB_ENV
+
+      - name: Get AnyKernel3
+        run: |
+          git clone "${{ env.AK3_SOURCE }}" -b "${{ env.AK3_BRANCH }}" Anykernel3
+          cd Anykernel3
+          git checkout ${{ env.AK3_COMMIT }}
+          echo "[+] Anykernel3 ready."
+
+      - name: Hapus total KernelSU + SUSFS bawaan (balik vanilla)
+        run: |
+          rm -rf drivers/kernelsu KernelSU KernelSU-Next
+          sed -i '/kernelsu/d' drivers/Makefile
+          sed -i '/drivers\/kernelsu\/Kconfig/d' drivers/Kconfig
+          python3 - <<'PYEOF'
+          import os, re, shutil
+
+          KSU_DIRS = ["drivers/kernelsu", "KernelSU", "KernelSU-Next"]
+          for d in KSU_DIRS:
+              shutil.rmtree(d, ignore_errors=True)
+
+          HARD_REMOVE = [
+              "fs/susfs.c", "fs/sus_su.c",
+              "include/linux/susfs.h", "include/linux/susfs_def.h",
+          ]
+          for f in HARD_REMOVE:
+              if os.path.exists(f):
+                  os.remove(f)
+
+          CLEAN_FILES = [
+              "fs/exec.c", "fs/read_write.c", "fs/open.c", "fs/stat.c",
+              "fs/devpts/inode.c", "fs/namei.c", "fs/dcache.c", "fs/statfs.c",
+              "fs/namespace.c", "fs/proc_namespace.c", "fs/readdir.c",
+              "fs/proc/task_mmu.c", "fs/proc/base.c", "fs/proc/fd.c",
+              "fs/proc/cmdline.c", "fs/overlayfs/super.c", "fs/overlayfs/overlayfs.h",
+              "fs/overlayfs/inode.c", "fs/notify/fdinfo.c",
+              "drivers/input/input.c", "drivers/tty/pty.c",
+              "security/security.c", "security/selinux/avc.c",
+              "security/selinux/hooks.c", "security/selinux/ss/services.c",
+              "kernel/kallsyms.c", "kernel/sys.c", "kernel/reboot.c",
+              "include/linux/sched.h", "include/linux/mount.h",
+              "include/linux/seccomp.h",
+          ]
+
+          def strip_blocks(path):
+              with open(path, encoding="utf-8", errors="ignore") as fh:
+                  lines = fh.read().split("\n")
+              n = len(lines)
+              def find_block(start):
+                  depth = 0
+                  j = start
+                  else_idx = None
+                  while j < n:
+                      t = lines[j]
+                      if re.match(r'^\s*#\s*(if|ifdef|ifndef)\b', t):
+                          depth += 1
+                      elif re.match(r'^\s*#\s*(else|elif)\b', t) and depth == 1 and else_idx is None:
+                          else_idx = j
+                      elif re.match(r'^\s*#\s*endif\b', t):
+                          depth -= 1
+                          if depth == 0:
+                              return j, else_idx
+                      j += 1
+                  return n - 1, else_idx
+              def proc(rng):
+                  out = []
+                  i = rng[0]
+                  while i < rng[1]:
+                      line = lines[i]
+                      m = re.match(r'^\s*#\s*(ifdef|ifndef|if)\b', line)
+                      if not m:
+                          out.append(line)
+                          i += 1
+                          continue
+                      endif_idx, else_idx = find_block(i)
+                      nxt = endif_idx + 1
+                      if "CONFIG_KSU" not in line:
+                          out.append(line)
+                          if else_idx is None:
+                              out += proc([i + 1, endif_idx])
+                          else:
+                              out += proc([i + 1, else_idx])
+                              out.append(lines[else_idx])
+                              out += proc([else_idx + 1, endif_idx])
+                          out.append(lines[endif_idx])
+                      else:
+                          kw = m.group(1)
+                          if else_idx is not None:
+                              if kw == "ifndef":
+                                  out += proc([i + 1, else_idx])
+                              else:
+                                  out += proc([else_idx + 1, endif_idx])
+                          else:
+                              if kw == "ifndef":
+                                  out += proc([i + 1, endif_idx])
+                      i = nxt
+                  return out
+              with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                  fh.write("\n".join(proc([0, n])))
+
+          for f in CLEAN_FILES:
+              if os.path.exists(f):
+                  strip_blocks(f)
+
+          for mk in ["fs/Makefile", "drivers/Makefile", "drivers/Kconfig", "fs/Kconfig"]:
+              if os.path.exists(mk):
+                  with open(mk, encoding="utf-8", errors="ignore") as fh:
+                      c = fh.read()
+                  c2 = re.sub(r'^.*CONFIG_KSU.*$\n?', '', c, flags=re.M)
+                  if c2 != c:
+                      with open(mk, "w", encoding="utf-8", newline="\n") as fh:
+                          fh.write(c2)
+          PYEOF
+          sed -i '/CONFIG_KSU/d' arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          echo "[+] SUSFS + KernelSU bawaan (v2.0.0) dibuang, source vanilla."
+
+      - name: Install KernelSU (ResukiSU) fresh
+        run: |
+          curl -sSL "https://raw.githubusercontent.com/${KERNELSU_AUTHOR}/${KERNELSU_NAME}/refs/heads/${KERNELSU_ORIGIN_BRANCH}/kernel/setup.sh" | bash -s "${{ env.KERNELSU_BRANCH }}"
+
+      - name: Set KSU + SUSFS defconfig
+        run: |
+          CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          sed -i '/CONFIG_KSU/d' $CFG
+          sed -i '/CONFIG_KSU_SUSFS/d' $CFG
+          cat <<'EOF' >> $CFG
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          EOF
+          if grep -q "THREAD_INFO_IN_TASK" drivers/kernelsu/Kconfig 2>/dev/null; then
+            echo "CONFIG_THREAD_INFO_IN_TASK=y" >> $CFG
+          fi
+          echo "[+] KSU + SUSFS config appended."
+
+      - name: Merge QGKI config (if exists)
+        run: |
+          QGKI_CONFIG="vendor/vili_QGKI.config"
+          if [ -f "$QGKI_CONFIG" ]; then
+            echo "[+] Found QGKI config, merging..."
+            CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+            scripts/kconfig/merge_config.sh -m -O out $CFG "$QGKI_CONFIG"
+            make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
+            echo "[+] QGKI config merged."
+          else
+            echo "[-] No QGKI config found, skipping merge."
+          fi
+
+      - name: Patch SUSFS v2.3.0 (core) + vanilla-kan file hook yang bentrok
+        run: |
+          curl -sSL -o susfs_patch_to_5.4.patch "${{ env.PATCHES_BASE }}/Patches/Patch/susfs_patch_to_5.4.patch"
+          patch -p1 --no-backup-if-mismatch < susfs_patch_to_5.4.patch || true
+          find . -name "*.orig" -delete
+          # File dengan .rej = hook generic gosong di source Samsung.
+          # Vanilla-kan ulang (hapus blok CONFIG_KSU*) supaya tidak setengah-patch;
+          # hooks yang perlu nanti ditulis oleh susfs_inline_hook_patches.sh.
+          if find . -name "*.rej" | grep -q .; then
+            echo "[-] Patch SUSFS ada .rej, vanilla-kan file tsb:"
+            for r in $(find . -name "*.rej"); do
+              f="${r%.rej}"
+              echo "   -> $f"
+              python3 - "$f" <<'PYEOF'
+          import sys, re
+          path = sys.argv[1]
+          lines = open(path, encoding="utf-8", errors="ignore").read().split("\n")
+          n = len(lines)
+          def find_block(start):
+              d = 0; j = start; else_idx = None
+              while j < n:
+                  t = lines[j]
+                  if re.match(r'^\s*#\s*(if|ifdef|ifndef)\b', t): d += 1
+                  elif re.match(r'^\s*#\s*(else|elif)\b', t) and d == 1 and else_idx is None: else_idx = j
+                  elif re.match(r'^\s*#\s*endif\b', t):
+                      d -= 1
+                      if d == 0: return j, else_idx
+                  j += 1
+              return n - 1, else_idx
+          def proc(rng):
+              out = []; i = rng[0]
+              while i < rng[1]:
+                  line = lines[i]
+                  m = re.match(r'^\s*#\s*(ifdef|ifndef|if)\b', line)
+                  if not m:
+                      out.append(line); i += 1; continue
+                  ei, e2 = find_block(i); nxt = ei + 1
+                  if "CONFIG_KSU" in line:
+                      kw = m.group(1)
+                      if e2 is not None:
+                          if kw == "ifndef": out += proc([i+1, e2])
+                          else: out += proc([e2+1, ei])
+                      else:
+                          if kw == "ifndef": out += proc([i+1, ei])
+                  else:
+                      out.append(line)
+                      if e2 is None: out += proc([i+1, ei])
+                      else:
+                          out += proc([i+1, e2]); out.append(lines[e2]); out += proc([e2+1, ei])
+                      out.append(lines[ei])
+                  i = nxt
+              return out
+          open(path, "w", encoding="utf-8", newline="\n").write("\n".join(proc([0, n])))
+          PYEOF
+              rm -f "$r"
+            done
+          fi
+          if [ -f fs/susfs.c ]; then
+            echo "[+] SUSFS core v2.3.0 OK"
+          else
+            echo "[-] SUSFS core tidak terbentuk setelah patch."
+            exit 1
+          fi
+
+      - name: Apply SUSFS inline hook (ReSukiSU format)
+        run: |
+          curl -sSL -o susfs_inline_hook_patches.sh "${{ env.PATCHES_BASE }}/Patches/susfs_inline_hook_patches.sh"
+          bash susfs_inline_hook_patches.sh ./
+          echo "[+] SUSFS inline hook (ReSukiSU format) applied."
+
+      - name: Extra kernel config (KALLSYMS + localversion)
+        run: |
+          CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
+          sed -i 's|# CONFIG_LOCALVERSION is not set|CONFIG_LOCALVERSION="-ResukiSU"|' $CFG
+          sed -i 's|# CONFIG_LOCALVERSION_AUTO is not set|CONFIG_LOCALVERSION_AUTO=n|' $CFG
+          sed -i -e '/CONFIG_DEBUG_KERNEL/d' -e '/CONFIG_KALLSYMS/d' -e '/CONFIG_KALLSYMS_ALL/d' $CFG
+          cat <<'EOF' >> $CFG
+          CONFIG_DEBUG_KERNEL=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          EOF
+          echo "[+] Kernel name -ResukiSU, KALLSYMS enabled."
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: build-kernel-${{ env.DEVICE_NAME }}
+          max-size: 2G
+
+      - name: Build kernel
+        run: |
+          set -o pipefail
+          export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
+          make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} 2>&1 | tee error.log
+
+      - name: Simpan error log otomatis (kalau gagal)
+        if: failure()
+        run: |
+          echo "[*] Build gagal. Menangkap semua error..."
+          rm -f error_summary.txt
+          # Ekstrak baris error beserta konteks dari error.log
+          if [ -f error.log ]; then
+            grep -nE "error:|Error [0-9]+|make\[[0-9]+\]: \*\*\*|fatal error|undefined reference|implicit declaration|warning: " error.log > error_summary.txt || true
+            echo "== total baris error terdeteksi =="
+            wc -l error_summary.txt
+            echo "== 120 baris error teratas =="
+            head -120 error_summary.txt
+          else
+            echo "[-] error.log tidak ditemukan."
+          fi
+          # Tangkap file .rej sisa (patch bentrok)
+          echo "=== file .rej sisa ==="
+          find . -name "*.rej" | tee error_rej_list.txt || true
+          echo "=== status file penting ==="
+          ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/ 2>/dev/null || true
+          find out/ -name "*.o" -newer out/arch/${{ env.KERNEL_ARCH }}/boot/Image 2>/dev/null | head -5 || true
+
+      - name: Upload error log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log
+          path: |
+            error.log
+            error_summary.txt
+            error_rej_list.txt
+            **/*.rej
+            out/arch/${{ env.KERNEL_ARCH }}/boot/
+          if-no-files-found: warn
+
+      - name: Verify build output
+        run: |
+          ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/
+          test -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image && echo "Image OK"
+
+      - name: Create DTBO image
+        run: |
+          DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*vili*.dtbo" 2>/dev/null)
+          if [ -z "$DTBO_FILES" ]; then
+            echo "[-] No .dtbo files found."
+            find out/ -name "*.dtbo" | head -50
+            exit 1
+          fi
+          mkdtimg create out/arch/${{ env.KERNEL_ARCH }}/boot/dtbo.img --page_size=4096 ${DTBO_FILES}
+          echo "[+] DTBO created."
+
+      - name: Pack AnyKernel3 zip
+        run: |
+          TIME=$(date +"%Y%m%d%H%M%S")
+          IMAGE_DIR="out/arch/${{ env.KERNEL_ARCH }}/boot"
+          mkdir -p tmp
+
+          sed -i 's|ExampleKernel by osm0sis @ xda-developers|ResukiSU+SUSFS Kernel Build @ github|g' Anykernel3/anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' Anykernel3/anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' Anykernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' Anykernel3/anykernel.sh
+
+          if [ -f "$IMAGE_DIR/Image.gz-dtb" ]; then
+            cp -fp $IMAGE_DIR/Image.gz-dtb tmp; echo "Image.gz-dtb"
+          elif [ -f "$IMAGE_DIR/Image.gz" ]; then
+            cp -fp $IMAGE_DIR/Image.gz tmp; echo "Image.gz"
+          elif [ -f "$IMAGE_DIR/Image" ]; then
+            cp -fp $IMAGE_DIR/Image tmp; echo "Image"
+          fi
+
+          if [ -f "$IMAGE_DIR/dtbo.img" ]; then
+            cp -fp $IMAGE_DIR/dtbo.img tmp; echo "dtbo.img"
+          fi
+
+          if [ -f "$IMAGE_DIR/dtb.img" ]; then
+            cp -fp $IMAGE_DIR/dtb.img tmp/dtb
+          elif [ -f "$IMAGE_DIR/dtb" ]; then
+            cp -fp $IMAGE_DIR/dtb tmp
+          fi
+
+          cp -rp ./Anykernel3/* tmp
+          cd tmp
+          7za a -mx9 tmp.zip * >/dev/null
+          cd ..
+          cp -fp tmp/tmp.zip "${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-Anykernel3.zip"
+          rm -rf tmp
+          echo "PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-Anykernel3.zip" >> $GITHUB_ENV
+          echo "[+] Pack done: ${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-Anykernel3.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-${{ env.PACK_NAME }}
+          path: ${{ env.PACK_NAME }}
