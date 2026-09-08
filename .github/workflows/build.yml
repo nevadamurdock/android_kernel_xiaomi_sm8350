@@ -252,6 +252,7 @@ jobs:
           DEFCONFIG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
           if [ -f "$QGKI_CONFIG" ]; then
             echo "[+] Found QGKI config, merging with defconfig..."
+            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
             mkdir -p out
             scripts/kconfig/merge_config.sh -m -O out "$DEFCONFIG" "$QGKI_CONFIG"
             make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
