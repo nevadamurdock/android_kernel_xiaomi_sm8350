@@ -246,20 +246,25 @@ jobs:
           fi
           echo "[+] KSU + SUSFS config appended."
 
-      - name: Merge QGKI config
+      - name: Merge vendor configs (QGKI + debugfs + lahaina)
         run: |
-          QGKI_CONFIG="arch/${{ env.KERNEL_ARCH }}/configs/vendor/vili_QGKI.config"
-          DEFCONFIG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
-          if [ -f "$QGKI_CONFIG" ]; then
-            echo "[+] Found QGKI config, merging with defconfig..."
-            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
-            mkdir -p out
-            scripts/kconfig/merge_config.sh -m -O out "$DEFCONFIG" "$QGKI_CONFIG"
-            make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
-            echo "[+] QGKI config merged."
-          else
-            echo "[-] No QGKI config found, skipping merge."
-          fi
+          CFG_DIR="arch/${{ env.KERNEL_ARCH }}/configs"
+          DEFCONFIG="$CFG_DIR/${{ env.DEFCONFIG_NAME }}"
+          LAHAINA_CFG="$CFG_DIR/vendor/lahaina-qgki_defconfig"
+          QGKI_CONFIG="$CFG_DIR/vendor/xiaomi_QGKI.config"
+          DEBUGFS_CONFIG="$CFG_DIR/vendor/debugfs.config"
+          export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
+          mkdir -p out
+          MERGE_LIST="$DEFCONFIG"
+          for CFG in "$LAHAINA_CFG" "$QGKI_CONFIG" "$DEBUGFS_CONFIG"; do
+            if [ -f "$CFG" ]; then
+              MERGE_LIST="$MERGE_LIST $CFG"
+              echo "[+] Found $(basename $CFG)"
+            fi
+          done
+          scripts/kconfig/merge_config.sh -m -O out $MERGE_LIST
+          make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
+          echo "[+] Vendor configs merged."
 
       - name: Patch SUSFS v2.3.0 (core) + vanilla-kan file hook yang bentrok
         run: |
@@ -333,18 +338,21 @@ jobs:
           bash susfs_inline_hook_patches.sh ./
           echo "[+] SUSFS inline hook (ReSukiSU format) applied."
 
-      - name: Extra kernel config (KALLSYMS + localversion)
+      - name: Extra kernel config (KALLSYMS + localversion + DTB)
         run: |
           CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
           sed -i 's|# CONFIG_LOCALVERSION is not set|CONFIG_LOCALVERSION="-ResukiSU"|' $CFG
           sed -i 's|# CONFIG_LOCALVERSION_AUTO is not set|CONFIG_LOCALVERSION_AUTO=n|' $CFG
-          sed -i -e '/CONFIG_DEBUG_KERNEL/d' -e '/CONFIG_KALLSYMS/d' -e '/CONFIG_KALLSYMS_ALL/d' $CFG
+          sed -i -e '/CONFIG_DEBUG_KERNEL/d' -e '/CONFIG_KALLSYMS/d' -e '/CONFIG_KALLSYMS_ALL/d' \
+                 -e '/CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE/d' -e '/CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES/d' $CFG
           cat <<'EOF' >> $CFG
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
           CONFIG_KALLSYMS_ALL=y
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="lahaina"
           EOF
-          echo "[+] Kernel name -ResukiSU, KALLSYMS enabled."
+          echo "[+] Kernel name -ResukiSU, KALLSYMS enabled, Image.gz-dtb with lahaina DTB."
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.22
@@ -357,18 +365,7 @@ jobs:
           set -o pipefail
           export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
           make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz 2>&1 | tee error.log
-          # Build DTB
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} dtbs 2>&1 | tee -a error.log
-          # Append DTB ke Image.gz bikin Image.gz-dtb
-          DTB=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/qcom/ -name "*lahaina*.dtb" 2>/dev/null | head -1 || true)
-          if [ -n "$DTB" ] && [ -f "$DTB" ]; then
-            cat out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz "$DTB" > out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb
-            echo "[+] Image.gz-dtb created from $DTB"
-          else
-            echo "[-] No lahaina DTB found, using Image.gz only"
-            find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*.dtb" | head -10 || true
-          fi
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz-dtb 2>&1 | tee error.log
 
       - name: Simpan error log otomatis (kalau gagal)
         if: failure()
@@ -409,14 +406,7 @@ jobs:
       - name: Verify build output
         run: |
           ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/
-          if [ -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb ]; then
-            echo "Image.gz-dtb OK"
-          elif [ -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz ]; then
-            echo "Image.gz OK (no DTB appended)"
-          else
-            echo "[-] No kernel image found"
-            exit 1
-          fi
+          test -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb && echo "Image.gz-dtb OK" || { echo "[-] Image.gz-dtb not found"; ls out/arch/${{ env.KERNEL_ARCH }}/boot/; exit 1; }
 
       - name: Create DTBO image
         run: |
