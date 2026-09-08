@@ -246,13 +246,13 @@ jobs:
           fi
           echo "[+] KSU + SUSFS config appended."
 
-      - name: Merge QGKI config (if exists)
+      - name: Merge QGKI config
         run: |
-          QGKI_CONFIG="vendor/vili_QGKI.config"
+          QGKI_CONFIG="arch/${{ env.KERNEL_ARCH }}/configs/vendor/vili_QGKI.config"
+          DEFCONFIG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
           if [ -f "$QGKI_CONFIG" ]; then
-            echo "[+] Found QGKI config, merging..."
-            CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
-            scripts/kconfig/merge_config.sh -m -O out $CFG "$QGKI_CONFIG"
+            echo "[+] Found QGKI config, merging with defconfig..."
+            scripts/kconfig/merge_config.sh -m -O out "$DEFCONFIG" "$QGKI_CONFIG"
             make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
             echo "[+] QGKI config merged."
           else
