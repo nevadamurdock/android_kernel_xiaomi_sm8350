@@ -357,7 +357,7 @@ jobs:
           set -o pipefail
           export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
           make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz-dtb 2>&1 | tee error.log
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz 2>&1 | tee error.log
 
       - name: Simpan error log otomatis (kalau gagal)
         if: failure()
@@ -398,7 +398,7 @@ jobs:
       - name: Verify build output
         run: |
           ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/
-          test -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb && echo "Image.gz-dtb OK" || { echo "[-] Image.gz-dtb not found"; ls out/arch/${{ env.KERNEL_ARCH }}/boot/; exit 1; }
+          test -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz && echo "Image.gz OK" || { echo "[-] Image.gz not found"; ls out/arch/${{ env.KERNEL_ARCH }}/boot/; exit 1; }
 
       - name: Create DTBO image
         run: |
