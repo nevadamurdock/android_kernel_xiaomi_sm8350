@@ -402,10 +402,10 @@ jobs:
 
       - name: Create DTBO image
         run: |
-          DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*vili*.dtbo" 2>/dev/null)
+          DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*vili*.dtbo" 2>/dev/null || true)
           if [ -z "$DTBO_FILES" ]; then
             echo "[-] No *vili*.dtbo found, trying *lahaina*.dtbo..."
-            DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*lahaina*.dtbo" 2>/dev/null)
+            DTBO_FILES=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*lahaina*.dtbo" 2>/dev/null || true)
           fi
           if [ -z "$DTBO_FILES" ]; then
             echo "[-] No DTBO files found, skipping DTBO creation."
