@@ -252,6 +252,7 @@ jobs:
           DEFCONFIG="arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}"
           if [ -f "$QGKI_CONFIG" ]; then
             echo "[+] Found QGKI config, merging with defconfig..."
+            mkdir -p out
             scripts/kconfig/merge_config.sh -m -O out "$DEFCONFIG" "$QGKI_CONFIG"
             make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
             echo "[+] QGKI config merged."
@@ -267,9 +268,11 @@ jobs:
           # File dengan .rej = hook generic gosong di source Samsung.
           # Vanilla-kan ulang (hapus blok CONFIG_KSU*) supaya tidak setengah-patch;
           # hooks yang perlu nanti ditulis oleh susfs_inline_hook_patches.sh.
-          if find . -name "*.rej" | grep -q .; then
+          # File dengan .rej dari touchscreen driver diabaikan (bukan file inti kernel)
+          REJ_FILES=$(find . -name "*.rej" -not -path "*/drivers/input/touchscreen/*")
+          if echo "$REJ_FILES" | grep -q .; then
             echo "[-] Patch SUSFS ada .rej, vanilla-kan file tsb:"
-            for r in $(find . -name "*.rej"); do
+            for r in $REJ_FILES; do
               f="${r%.rej}"
               echo "   -> $f"
               python3 - "$f" <<'PYEOF'
@@ -372,7 +375,7 @@ jobs:
           fi
           # Tangkap file .rej sisa (patch bentrok)
           echo "=== file .rej sisa ==="
-          find . -name "*.rej" | tee error_rej_list.txt || true
+          find . -name "*.rej" -not -path "*/drivers/input/touchscreen/*" | tee error_rej_list.txt || true
           echo "=== status file penting ==="
           ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/ 2>/dev/null || true
           find out/ -name "*.o" -newer out/arch/${{ env.KERNEL_ARCH }}/boot/Image 2>/dev/null | head -5 || true
@@ -387,6 +390,7 @@ jobs:
             error_summary.txt
             error_rej_list.txt
             **/*.rej
+            !drivers/input/touchscreen/**/*.rej
             out/arch/${{ env.KERNEL_ARCH }}/boot/
           if-no-files-found: warn
 
