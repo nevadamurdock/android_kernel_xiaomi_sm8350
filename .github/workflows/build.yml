@@ -358,6 +358,17 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
           make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
           make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz 2>&1 | tee error.log
+          # Build DTB
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} dtbs 2>&1 | tee -a error.log
+          # Append DTB ke Image.gz bikin Image.gz-dtb
+          DTB=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/qcom/ -name "*lahaina*.dtb" 2>/dev/null | head -1 || true)
+          if [ -n "$DTB" ] && [ -f "$DTB" ]; then
+            cat out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz "$DTB" > out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb
+            echo "[+] Image.gz-dtb created from $DTB"
+          else
+            echo "[-] No lahaina DTB found, using Image.gz only"
+            find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*.dtb" | head -10 || true
+          fi
 
       - name: Simpan error log otomatis (kalau gagal)
         if: failure()
@@ -398,7 +409,14 @@ jobs:
       - name: Verify build output
         run: |
           ls -la out/arch/${{ env.KERNEL_ARCH }}/boot/
-          test -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz && echo "Image.gz OK" || { echo "[-] Image.gz not found"; ls out/arch/${{ env.KERNEL_ARCH }}/boot/; exit 1; }
+          if [ -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb ]; then
+            echo "Image.gz-dtb OK"
+          elif [ -f out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz ]; then
+            echo "Image.gz OK (no DTB appended)"
+          else
+            echo "[-] No kernel image found"
+            exit 1
+          fi
 
       - name: Create DTBO image
         run: |
