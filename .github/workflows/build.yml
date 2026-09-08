@@ -338,21 +338,18 @@ jobs:
           bash susfs_inline_hook_patches.sh ./
           echo "[+] SUSFS inline hook (ReSukiSU format) applied."
 
-      - name: Extra kernel config (KALLSYMS + localversion + DTB)
+      - name: Extra kernel config (KALLSYMS + localversion)
         run: |
           CFG=arch/${{ env.KERNEL_ARCH }}/configs/${{ env.DEFCONFIG_NAME }}
           sed -i 's|# CONFIG_LOCALVERSION is not set|CONFIG_LOCALVERSION="-ResukiSU"|' $CFG
           sed -i 's|# CONFIG_LOCALVERSION_AUTO is not set|CONFIG_LOCALVERSION_AUTO=n|' $CFG
-          sed -i -e '/CONFIG_DEBUG_KERNEL/d' -e '/CONFIG_KALLSYMS/d' -e '/CONFIG_KALLSYMS_ALL/d' \
-                 -e '/CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE/d' -e '/CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES/d' $CFG
+          sed -i -e '/CONFIG_DEBUG_KERNEL/d' -e '/CONFIG_KALLSYMS/d' -e '/CONFIG_KALLSYMS_ALL/d' $CFG
           cat <<'EOF' >> $CFG
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
           CONFIG_KALLSYMS_ALL=y
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="lahaina"
           EOF
-          echo "[+] Kernel name -ResukiSU, KALLSYMS enabled, Image.gz-dtb with lahaina DTB."
+          echo "[+] Kernel name -ResukiSU, KALLSYMS enabled."
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.22
@@ -365,7 +362,17 @@ jobs:
           set -o pipefail
           export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$GITHUB_WORKSPACE/google/bin:$PATH
           make O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz-dtb 2>&1 | tee error.log
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} Image.gz 2>&1 | tee error.log
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=${{ env.KERNEL_ARCH }} dtbs 2>&1 | tee -a error.log
+          DTB=$(find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/vendor/qcom/ -name "lahaina.dtb" 2>/dev/null | head -1 || true)
+          if [ -n "$DTB" ] && [ -f "$DTB" ]; then
+            cat out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz "$DTB" > out/arch/${{ env.KERNEL_ARCH }}/boot/Image.gz-dtb
+            echo "[+] Image.gz-dtb created from $DTB"
+          else
+            echo "[-] lahaina.dtb not found, listing available DTBs:"
+            find out/arch/${{ env.KERNEL_ARCH }}/boot/dts/ -name "*.dtb" | head -20 || true
+            echo "[-] Using Image.gz only"
+          fi
 
       - name: Simpan error log otomatis (kalau gagal)
         if: failure()
